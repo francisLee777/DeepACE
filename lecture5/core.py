@@ -359,6 +359,22 @@ def log(x):
 # End----------------基础数学类 exp/sin/cos/tanh--------------
 
 
+class Sigmoid(Function):
+    def forward(self, x):
+        y = 1 / (1 + np.exp(-x))
+        # y = np.tanh(x * 0.5) * 0.5 + 0.5  # Better implementation
+        return y
+
+    def backward(self, dy):
+        y = self.output_variable[0]
+        dx = dy * y * (1 - y)
+        return dx
+
+
+def sigmoid(x):
+    return Sigmoid()(x)
+
+
 class BroadcastTo(Function):
     def __init__(self, target_shape):
         self.origin_shape = None  # 先声明

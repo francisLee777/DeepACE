@@ -15,8 +15,8 @@ b2 = Variable(np.zeros(1))
 
 class Sigmoid(Function):
     def forward(self, x):
-        # y = 1 / (1 + exp(-x))
-        y = np.tanh(x * 0.5) * 0.5 + 0.5  # Better implementation
+        y = 1 / (1 + exp(-x))
+        # y = np.tanh(x * 0.5) * 0.5 + 0.5  # Better implementation
         return y
 
     def backward(self, dy):
