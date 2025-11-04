@@ -193,13 +193,14 @@ class Variable:
 
     def backward(self):
         if self.grad is None:
-            self.grad = np.ones_like(self.value, dtype=np.float32)
+            self.grad = Variable(np.ones_like(self.value, dtype=np.float32))
 
         # 创建一个列表来存储需要处理的函数和梯度对
         funcs = []
         visited = set()  # 用于跟踪已访问的函数，避免重复处理
 
         # 后序遍历收集所有函数
+
         def add_func(temp_func):
             tempCount = 0
             if temp_func not in visited:
@@ -217,7 +218,7 @@ class Variable:
         if self.creator is not None:
             try:
                 count = add_func(self.creator)
-                print(count)
+                # print(count)
             except RecursionError as e:
                 print("递归溢出！")
                 import traceback
@@ -233,12 +234,15 @@ class Variable:
 
             # 将梯度传递给输入变量
             for i, temp_x in enumerate(f.input_variable):
-                if grads[i] is None:
-                    continue
                 if temp_x.grad is None:
+                    if not isinstance(grads[i], Variable) and grads[i] is not None:
+                        print(f"[警告]")
                     temp_x.grad = grads[i]
                 else:
-                    temp_x.grad += grads[i]
+                    # 不能写成 temp_x.grad += grads[i]，否则在 Python 的语义中，就地修改原有对象，如果其他节点仍然在依赖这个 temp_x.grad, 会被污染数据。
+                    if not isinstance(temp_x.grad, Variable):
+                        print(f"[警告]")
+                    temp_x.grad = temp_x.grad + grads[i]
 
 
 # End ------------------------------------------------
@@ -264,9 +268,9 @@ class Add(Function):
         input_dy1, input_dy2 = input_dy, input_dy
         # 处理广播情况
         if self.input1_shape != self.input2_shape:
-            input_dy1 = util_sum_to(input_dy1, self.input1_shape)
-            input_dy2 = util_sum_to(input_dy2, self.input2_shape)
-        return input_dy1, input_dy2
+            input_dy1 = sum_to(input_dy1, self.input1_shape)
+            input_dy2 = sum_to(input_dy2, self.input2_shape)
+        return 1 * input_dy1, 1 * input_dy2
 
 
 def add(x0, x1):
@@ -286,10 +290,10 @@ class Sub(Function):
 
     def backward(self, input_dy):
         # 处理广播
-        dy1, dy2 = input_dy, -input_dy
+        dy1, dy2 = input_dy, - input_dy
         if self.input1_shape != self.input2_shape:
-            dy1 = util_sum_to(dy1, self.input1_shape)
-            dy2 = util_sum_to(dy2, self.input2_shape)
+            dy1 = sum_to(dy1, self.input1_shape)
+            dy2 = sum_to(dy2, self.input2_shape)
         return dy1, dy2
 
 
@@ -313,8 +317,8 @@ class Multiplication(Function):
         # 处理广播
         dy1, dy2 = input_dy * input_x1.value, input_dy * input_x0.value
         if self.input1_shape != self.input2_shape:
-            dy1 = util_sum_to(dy1, self.input1_shape)
-            dy2 = util_sum_to(dy2, self.input2_shape)
+            dy1 = sum_to(dy1, self.input1_shape)
+            dy2 = sum_to(dy2, self.input2_shape)
         return dy1, dy2
 
 
@@ -335,7 +339,7 @@ class Pow(Function):
 
     def backward(self, input_dy):
         (input_x,) = self.input_variable
-        return self.power * (input_x.value ** (self.power - 1)) * input_dy
+        return self.power * (input_x ** (self.power - 1)) * input_dy
 
 
 def pow(input_x, power):
@@ -357,13 +361,13 @@ class Div(Function):
 
     def backward(self, input_dy):
         input_x0, input_x1 = self.input_variable
-        dy1, dy2 = input_dy / input_x1.value, -input_dy * input_x0.value / (
-                input_x1.value ** 2
+        dy1, dy2 = input_dy / input_x1, -input_dy * input_x0 / (
+                input_x1 ** 2
         )
         # 处理广播
         if self.input1_shape != self.input2_shape:
-            dy1 = util_sum_to(dy1, self.input1_shape)
-            dy2 = util_sum_to(dy2, self.input2_shape)
+            dy1 = sum_to(dy1, self.input1_shape)
+            dy2 = sum_to(dy2, self.input2_shape)
         return dy1, dy2
 
 
@@ -441,11 +445,11 @@ class Transpose(Function):
 
     def backward(self, dy):
         if self.axes is None:
-            return np.transpose(dy)
+            return transpose(dy)
 
         axes_len = len(self.axes)
         inv_axes = tuple(np.argsort([ax % axes_len for ax in self.axes]))
-        return np.transpose(dy, inv_axes)
+        return transpose(dy, inv_axes)
 
 
 def transpose(input_x, axes=None):
@@ -463,12 +467,13 @@ class Stack(Function):
         return y
 
     def backward(self, dy):
+        dy = dy.value  # 取出真实的 ndarray
         # dy 形状: 在 axis 维新增了一维
         num_inputs = len(self.xs_shape)
         # 将 dy 拆分为 num_inputs 份
         splits = np.split(dy, num_inputs, axis=self.axis)
         # 移除堆叠维度
-        grads = [np.squeeze(split, axis=self.axis) for split in splits]
+        grads = [Variable(np.squeeze(split, axis=self.axis)) for split in splits]
         # list 转 tuple
         return tuple(grads)
 
@@ -490,7 +495,7 @@ class Reshape(Function):
 
     def backward(self, dy):
         # 这里要使用自身的reshape，而不是np.reshape，因为输入输出都是 Variable 类型
-        return np.reshape(dy, self.origin_shape)  # 反向传播时，需要将dy的形状恢复到x的形状
+        return reshape(dy, self.origin_shape)  # 反向传播时，需要将dy的形状恢复到x的形状
 
 
 def reshape(input_x, shape):
@@ -513,8 +518,8 @@ class GetItem(Function):
         # 构造一个与原始输入相同形状的 0 数组
         dx = np.zeros(self.x_shape, dtype=dy.dtype)
         # np.add.at 可以实现“稀疏加法”（用于切片梯度还原）
-        np.add.at(dx, self.slices, dy)
-        return dx
+        np.add.at(dx, self.slices, dy.value)
+        return Variable(dx)
 
 
 def get_item(x, slices):
@@ -531,7 +536,7 @@ class BroadcastTo(Function):
         return np.broadcast_to(input_x, self.target_shape)
 
     def backward(self, dy):
-        return util_sum_to(dy, self.origin_shape)
+        return sum_to(dy, self.origin_shape)
 
 
 def broadcast_to(input_x, shape):
@@ -550,7 +555,7 @@ class SumTo(Function):
         return util_sum_to(input_x, self.target_shape)
 
     def backward(self, dy):
-        return np.broadcast_to(dy, self.origin_shape)
+        return broadcast_to(dy, self.origin_shape)
 
 
 def sum_to(input_x, shape):
@@ -607,7 +612,7 @@ class Sum(Function):
         dy_reshaped = reshape(dy, self.output_shape_kept)
 
         # 将梯度广播回原始形状
-        dx = np.broadcast_to(np.reshape(dy, self.output_shape_kept), self.origin_shape)
+        dx = broadcast_to(dy_reshaped, self.origin_shape)
         return dx
 
 
@@ -644,7 +649,7 @@ class Exp(Function):
 
     def backward(self, input_dy):
         (out_dy,) = self.output_variable
-        return input_dy * out_dy.value
+        return input_dy * out_dy
 
 
 # Exp 函数的便捷接口
@@ -662,7 +667,7 @@ class Sin(Function):
 
     def backward(self, dy):
         (x,) = self.input_variable
-        dx = dy * np.cos(x.value)
+        dx = dy * cos(x)
         return dx
 
 
@@ -677,7 +682,7 @@ class Cos(Function):
 
     def backward(self, dy):
         (x,) = self.input_variable
-        dx = dy * -np.sin(x.value)
+        dx = dy * -sin(x)
         return dx
 
 
@@ -692,7 +697,7 @@ class Tanh(Function):
 
     def backward(self, dy):
         y = self.output_variable[0]
-        dx = dy * (1 - y.value * y.value)
+        dx = dy * (1 - y * y)
         return dx
 
 
@@ -707,7 +712,7 @@ class Log(Function):
 
     def backward(self, dy):
         (x,) = self.input_variable
-        dx = dy / x.value
+        dx = dy / x
         return dx
 
 
@@ -747,10 +752,11 @@ class Max(Function):
     def backward(self, dy):
         # dy 是上游梯度
         # 传播到所有最大值位置（可能有多个最大值相等）
+        dx = dy * self.argmax.astype(dy.dtype)
         if not self.keepdims and self.axis is not None:
             # 当 keepdims=False 时，dy 的维度比 x 小
             dy = np.expand_dims(dy, axis=self.axis)
-        dx = dy * self.argmax.astype(dy.dtype)
+            dx = dy * self.argmax.astype(dy.dtype)
         return dx
 
 
@@ -805,8 +811,8 @@ class MatMul(Function):
         input_x, input_w = self.input_variable
         # 1. 要使用 matmul 而不是 dot , 不然会有拆包和组装 Variable 类型的问题
         # 2. 这里 .T 的写法是转置操作，在之前的 Variable 类中 transpose 函数中已经实现过了
-        dx = dy.dot(input_w.value.T)
-        dW = input_x.value.T.dot(dy)
+        dx = matmul(dy, input_w.T)
+        dW = matmul(input_x.T, dy)
         # 出参是 Variable 类型
         return dx, dW
 
@@ -825,9 +831,9 @@ class LinearFunction(Function):
 
     def backward(self, dy):
         x, W, b = self.input_variable
-        db = None if b is None or b.value is None else util_sum_to(dy, b.shape)
-        dx = dy.dot(W.value.T)
-        dW = x.value.T.dot(dy)
+        db = None if b is None or b.value is None else sum_to(dy, b.shape)
+        dx = matmul(dy, W.T)
+        dW = matmul(x.T, dy)
         return dx, dW, db
 
 
@@ -851,7 +857,7 @@ class Sigmoid(Function):
 
     def backward(self, dy):
         y = self.output_variable[0]
-        dx = dy * y.value * (1 - y.value)
+        dx = dy * y * (1 - y)
         return dx
 
 
@@ -927,9 +933,9 @@ class Softmax(Function):
 
     def backward(self, dy):
         y = self.output_variable[0]
-        dx = y.value * dy
+        dx = y * dy
         sum_dx = dx.sum(axis=self.axis, keepdims=True)
-        dx -= y.value * sum_dx
+        dx -= y * sum_dx
         return dx
 
 
@@ -955,9 +961,9 @@ class SoftmaxCrossEntropy(Function):
         one_hot = np.zeros_like(y, dtype=t.dtype)
         one_hot[np.arange(N), t.value] = 1
         # softmax + crossentropy 的合成梯度
-        y.value = (y.value - one_hot) * dy
+        y = (y - one_hot) * dy
         # 这个Node是指 t 无需梯度，因为t是标签，不是中间变量。如果没有None的话导致框架后续逻辑不兼容
-        return y.value, None
+        return y, None
 
 
 # 使用另一种计算方式。是数学上最稳定的表达形式，避免任何溢出或 underflow。
@@ -987,7 +993,7 @@ class MeanSquaredError(Function):
 
     def backward(self, dy):
         x0, x1 = self.input_variable
-        diff = x0.value - x1.value
+        diff = x0 - x1
         dx0 = dy * diff * (2.0 / len(diff))
         dx1 = -dx0
         return dx0, dx1
@@ -1170,7 +1176,7 @@ class SGD(Optimizer):
         self.lr = lr
 
     def update_one(self, param):
-        param.value -= self.lr * param.grad
+        param.value -= self.lr * param.grad.value
 
 
 class AdaGrad(Optimizer):
@@ -1184,7 +1190,7 @@ class AdaGrad(Optimizer):
         if param.grad is None:
             return
 
-        grad = param.grad
+        grad = param.grad.value
 
         # 初始化累积项
         if param not in self.h:
@@ -1209,7 +1215,7 @@ class Momentum(Optimizer):
         if param.grad is None:
             return
 
-        grad = param.grad
+        grad = param.grad.value
 
         # 初始化动量
         if param not in self.v:

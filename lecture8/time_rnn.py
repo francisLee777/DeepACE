@@ -102,7 +102,7 @@ class TimeSoftmaxCrossEntropy(Function):
         dy *= 1 / (N * T)
 
         # softmax
-        y = softmax(x.value.reshape(N * T, C))
+        y = softmax(x.reshape(N * T, C))
 
         # one-hot
         t_flat = t.value.reshape(N * T)

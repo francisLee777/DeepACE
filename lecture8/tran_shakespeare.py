@@ -75,7 +75,7 @@ if __name__ == "__main__":
 
     for epoch in range(epochs):
         # ---- 训练阶段 ----
-        model.reset_state()
+
         total_loss, total_acc = 0, 0
         count = 0
         for x, t in train_loader:
@@ -93,9 +93,10 @@ if __name__ == "__main__":
             optimizer.update()
             s5 = int(round(time.time() * 1000))
             print("参数更新耗时[毫秒]: ", s5 - s4)
-            total_loss += loss.value * len(t)
-            total_acc += accuracy(y, t).value * len(t)
+            total_loss += loss * len(t)
+            total_acc += accuracy(y, t) * len(t)
             count += 1
+            loss.unchain_backward()
             print(count)
 
         avg_train_loss = total_loss.value / len(train_loader.dataset)
