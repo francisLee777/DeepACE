@@ -10,6 +10,7 @@ from lecture7.dataset import ThreeClassDataset
 
 
 def accuracy(y, t):
+    # 输入需要是 one-hot 编码
     y, t = as_variable(y), as_variable(t)
     # 预测值中概率最大的类别，构成与标签相同的形状
     pred = y.value.argmax(axis=1).reshape(t.shape)

@@ -15,10 +15,10 @@ class GetItem(Function):
 
     def backward(self, dy):
         # 构造一个与原始输入相同形状的 0 数组
-        gx = np.zeros(self.x_shape, dtype=dy.dtype)
+        dx = np.zeros(self.x_shape, dtype=dy.dtype)
         # np.add.at 可以实现“稀疏加法”（用于切片梯度还原）
-        np.add.at(gx, self.slices, dy)
-        return gx
+        np.add.at(dx, self.slices, dy.value)
+        return Variable(dx)
 
 
 def get_item(x, slices):
@@ -146,7 +146,7 @@ class SoftmaxCrossEntropy(Function):
         log_p = np.log(np.clip(self.y, 1e-15, 1.0))
 
         # --- 交叉熵 ---
-        loss = -np.sum(log_p[np.arange(self.N), t]) / self.N
+        loss = -np.sum(log_p[np.arange(self.N), t.ravel()]) / self.N
         return np.array(loss)
 
     def backward(self, dy):
@@ -174,7 +174,7 @@ if __name__ == "__main__":
     a = Variable(np.array([[1, 2, 3], [4, 5, 6]]))
     y = a[1]
     y.backward()
-    print(y, a.grad)  # variable([4 5 6]) [[0 0 0] [1 1 1]]
+    print(y, a.grad)  # variable([4 5 6]) variable([[0 0 0] [1 1 1]])
 
     loss = softmax_cross_entropy_simple(np.random.rand(4, 10), np.array([2, 6, 9, 1]))
     print(loss)

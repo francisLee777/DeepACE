@@ -15,7 +15,8 @@ class Reshape(Function):
         return np.reshape(x, self.target_shape)
 
     def backward(self, dy):
-        return np.reshape(dy, self.origin_shape)  # 反向传播时，需要将dy的形状恢复到x的形状
+        # 这里要使用自身的reshape，而不是np.reshape，因为输入输出都是 Variable 类型
+        return reshape(dy, self.origin_shape)  # 反向传播时，需要将dy的形状恢复到x的形状
 
 
 def reshape(input_x, shape):
@@ -94,7 +95,7 @@ class Sum(Function):
         """
 
         # 将梯度 reshape 为 "keep_dims=True" 时的形状
-        gy_reshaped = np.reshape(gy, self.output_shape_kept)
+        gy_reshaped = reshape(gy, self.output_shape_kept)
 
         # 将梯度广播回原始形状
         gx = broadcast_to(gy_reshaped, self.origin_shape)
@@ -189,13 +190,13 @@ if __name__ == '__main__':
     print(y.transpose())  # variable([[1 4] [2 5] [3 6]])
     print(z.T)  # variable([[[1] [4]] [[2] [5]]  [[3] [6]]])
 
-    print('----')
+    print('--yy--')
     x = Variable(np.array([[1, 2, 3], [4, 5, 6]]))
     y = sum(x)
     z = reshape(y, (1, 1, 1))
     print(z)
     z.backward()
-    print(y, x.grad)  # variable(15) [1 1 1 1 1 1]
+    print(y, x.grad)  # variable(21) variable([[1 1 1] [1 1 1]])
 
     print('----')
     x = np.array([1, 2, 3])
@@ -207,7 +208,7 @@ if __name__ == '__main__':
     y = broadcast_to(x, (2, 3))
     y.backward()
     print(y)  # variable([[1 2 3] [1 2 3]])
-    print(x.grad)  # 预期是 [2 2 2]
+    print(x.grad)  # 预期是 variable([2 2 2])
 
     print('----')
     x = Variable(np.array([[1, 2, 3], [1, 2, 3]]))
@@ -238,5 +239,5 @@ if __name__ == '__main__':
     z = x + y
     print(z)  # variable([[2 4 6] [5 7 9]])
     z.backward()
-    print(x.grad)  # [2 2 2]
-    print(y.grad)  # [[1 1 1] [1 1 1]]
+    print(x.grad)  # variable([2 2 2])
+    print(y.grad)  # variable([[1 1 1] [1 1 1]])

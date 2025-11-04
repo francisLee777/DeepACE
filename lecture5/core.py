@@ -84,9 +84,8 @@ class Reshape(Function):
         return np.reshape(x, self.target_shape)
 
     def backward(self, dy):
-        return np.reshape(
-            dy, self.origin_shape
-        )  # 反向传播时，需要将dy的形状恢复到x的形状
+        # 这里要使用自身的reshape，而不是np.reshape，因为输入输出都是 Variable 类型
+        return reshape(dy, self.origin_shape)  # 反向传播时，需要将dy的形状恢复到x的形状
 
 
 def reshape(input_x, shape):
@@ -135,7 +134,7 @@ class Sub(Function):
 
     def backward(self, input_dy):
         # 处理广播
-        dy1, dy2 = input_dy, (-1) * input_dy
+        dy1, dy2 = input_dy, - input_dy
         if self.input1_shape != self.input2_shape:
             dy1 = sum_to(dy1, self.input1_shape)
             dy2 = sum_to(dy2, self.input2_shape)
@@ -180,11 +179,11 @@ class Pow(Function):
         self.power = power
 
     def forward(self, input_x):
-        return input_x**self.power
+        return input_x ** self.power
 
     def backward(self, input_dy):
         (input_x,) = self.input_variable
-        return self.power * (input_x.value ** (self.power - 1)) * input_dy
+        return self.power * (input_x ** (self.power - 1)) * input_dy
 
 
 def pow(input_x, power):
@@ -206,8 +205,8 @@ class Div(Function):
 
     def backward(self, input_dy):
         input_x0, input_x1 = self.input_variable
-        dy1, dy2 = input_dy / input_x1.value, -input_dy * input_x0.value / (
-            input_x1.value**2
+        dy1, dy2 = input_dy / input_x1, -input_dy * input_x0 / (
+                input_x1 ** 2
         )
         # 处理广播
         if self.input1_shape != self.input2_shape:
@@ -256,13 +255,13 @@ def abs(input_x):
 # 求平方函数，实现了 Function2 类
 class Square(Function):
     def forward(self, square_input):
-        return square_input**2
+        return square_input ** 2
 
     def backward(self, input_dy):
         # 注意：对于单输入函数，input_variable是一个只有一个元素的元组
-        # (input_x, ) 把一个只包含一个元素的元组解包（unpack）成变量 input_x
-        (input_x,) = self.input_variable
-        return (2 * input_x.value * input_dy,)
+        # (x, ) 把一个只包含一个元素的元组解包（unpack）成变量 x
+        (x,) = self.input_variable
+        return 2 * x.value * input_dy
 
 
 # 平方函数的便捷接口
@@ -284,8 +283,8 @@ class Exp(Function):
         return np.exp(input_x)
 
     def backward(self, input_dy):
-        (input_x,) = self.input_variable
-        return (input_dy * np.exp(input_x.value),)
+        (out_dy,) = self.output_variable
+        return input_dy * out_dy
 
 
 # Exp 函数的便捷接口
@@ -458,7 +457,7 @@ class Sum(Function):
         2. 使用广播机制将梯度广播回原始输入形状。
         """
         # 将梯度 reshape 为 "keep_dims=True" 时的形状
-        dy_reshaped = np.reshape(dy, self.output_shape_kept)
+        dy_reshaped = reshape(dy, self.output_shape_kept)
 
         # 将梯度广播回原始形状
         dx = broadcast_to(dy_reshaped, self.origin_shape)
@@ -522,7 +521,7 @@ def linear(x, W, b=None):
 class MeanSquaredError(Function):
     def forward(self, input_x0, input_x1):
         diff = input_x0 - input_x1
-        y = (diff**2).sum() / len(diff)
+        y = (diff ** 2).sum() / len(diff)
         return y
 
     def backward(self, dy):
@@ -638,7 +637,7 @@ class Variable:
 
     def backward(self):
         if self.grad is None:
-            self.grad = np.ones_like(self.value)
+            self.grad = Variable(np.ones_like(self.value))
 
         # 创建一个列表来存储需要处理的函数和梯度对
         funcs = []

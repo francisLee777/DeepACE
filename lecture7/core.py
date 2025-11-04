@@ -168,7 +168,7 @@ class Variable:
 
     def backward(self):
         if self.grad is None:
-            self.grad = np.ones_like(self.value)
+            self.grad = Variable(np.ones_like(self.value))
 
         # 创建一个列表来存储需要处理的函数和梯度对
         funcs = []
@@ -252,7 +252,7 @@ class Sub(Function):
 
     def backward(self, input_dy):
         # 处理广播
-        dy1, dy2 = input_dy, (-1) * input_dy
+        dy1, dy2 = input_dy, - input_dy
         if self.input1_shape != self.input2_shape:
             dy1 = sum_to(dy1, self.input1_shape)
             dy2 = sum_to(dy2, self.input2_shape)
@@ -301,7 +301,7 @@ class Pow(Function):
 
     def backward(self, input_dy):
         (input_x,) = self.input_variable
-        return self.power * (input_x.value ** (self.power - 1)) * input_dy
+        return self.power * (input_x ** (self.power - 1)) * input_dy
 
 
 def pow(input_x, power):
@@ -323,8 +323,8 @@ class Div(Function):
 
     def backward(self, input_dy):
         input_x0, input_x1 = self.input_variable
-        dy1, dy2 = input_dy / input_x1.value, -input_dy * input_x0.value / (
-                input_x1.value ** 2
+        dy1, dy2 = input_dy / input_x1, -input_dy * input_x0 / (
+                input_x1 ** 2
         )
         # 处理广播
         if self.input1_shape != self.input2_shape:
@@ -377,9 +377,9 @@ class Square(Function):
 
     def backward(self, input_dy):
         # 注意：对于单输入函数，input_variable是一个只有一个元素的元组
-        # (input_x, ) 把一个只包含一个元素的元组解包（unpack）成变量 input_x
-        (input_x,) = self.input_variable
-        return (2 * input_x.value * input_dy,)
+        # (x, ) 把一个只包含一个元素的元组解包（unpack）成变量 x
+        (x,) = self.input_variable
+        return 2 * x.value * input_dy
 
 
 # 平方函数的便捷接口
@@ -428,9 +428,8 @@ class Reshape(Function):
         return np.reshape(x, self.target_shape)
 
     def backward(self, dy):
-        return np.reshape(
-            dy, self.origin_shape
-        )  # 反向传播时，需要将dy的形状恢复到x的形状
+        # 这里要使用自身的reshape，而不是np.reshape，因为输入输出都是 Variable 类型
+        return reshape(dy, self.origin_shape)  # 反向传播时，需要将dy的形状恢复到x的形状
 
 
 def reshape(input_x, shape):
@@ -453,8 +452,8 @@ class GetItem(Function):
         # 构造一个与原始输入相同形状的 0 数组
         dx = np.zeros(self.x_shape, dtype=dy.dtype)
         # np.add.at 可以实现“稀疏加法”（用于切片梯度还原）
-        np.add.at(dx, self.slices, dy)
-        return dx
+        np.add.at(dx, self.slices, dy.value)
+        return Variable(dx)
 
 
 def get_item(x, slices):
@@ -544,7 +543,7 @@ class Sum(Function):
         2. 使用广播机制将梯度广播回原始输入形状。
         """
         # 将梯度 reshape 为 "keepdims=True" 时的形状
-        dy_reshaped = np.reshape(dy, self.output_shape_kept)
+        dy_reshaped = reshape(dy, self.output_shape_kept)
 
         # 将梯度广播回原始形状
         dx = broadcast_to(dy_reshaped, self.origin_shape)
@@ -583,8 +582,8 @@ class Exp(Function):
         return np.exp(input_x)
 
     def backward(self, input_dy):
-        (input_x,) = self.input_variable
-        return (input_dy * np.exp(input_x.value),)
+        (out_dy,) = self.output_variable
+        return input_dy * out_dy
 
 
 # Exp 函数的便捷接口
@@ -800,6 +799,16 @@ def sigmoid(x):
     return Sigmoid()(x)
 
 
+def accuracy(y, t):
+    # 输入需要是 one-hot 编码
+    y, t = as_variable(y), as_variable(t)
+    # 预测值中概率最大的类别，构成与标签相同的形状
+    pred = y.value.argmax(axis=1).reshape(t.shape)
+    result = pred == t.value  # 预测值与标签值相等的位置为True，否则为False
+    acc = result.mean()  # 计算准确率，即正确预测的样本数占总样本数的比例
+    return Variable(as_array(acc))
+
+
 def softmax_simple(x, axis=1):
     x = as_variable(x)
     y = exp(x)
@@ -823,8 +832,8 @@ class Softmax(Function):
 
     def forward(self, x):
         # 防止数据溢出，进行缩放
-        # y = x - x.max(axis=self.axis, keepdims=True)
-        y = np.exp(x)
+        y = x - x.max(axis=self.axis, keepdims=True)
+        y = np.exp(y)
         y /= y.sum(axis=self.axis, keepdims=True)
         return y
 
@@ -837,40 +846,41 @@ class Softmax(Function):
 
 
 class SoftmaxCrossEntropy(Function):
-    def __init__(self):
-        self.y = None  # 预测值
-        self.t = None  # 标签值
-        self.N = None  # 数据 batch 的大小
-
     def forward(self, x, t):
-        # --- 数值稳定处理 ---
-        x = x - x.max(axis=1, keepdims=True)
-        # --- softmax ---
-        exp_x = np.exp(x)
-        sum_exp_x = exp_x.sum(axis=1, keepdims=True)
-        self.y = exp_x / sum_exp_x  # softmax输出
-
-        self.t = t  # 保存标签
-        self.N = x.shape[0]  # batch大小
-
-        # --- clip避免 log(0) 和 log(1) ---
-        log_p = np.log(np.clip(self.y, 1e-15, 1.0))
-
-        # --- 交叉熵 ---
-        loss = -np.sum(log_p[np.arange(self.N), t]) / self.N
-        return np.array(loss)
+        N = x.shape[0]
+        log_z = logsumexp(x, axis=1)
+        log_p = x - log_z
+        log_p = log_p[np.arange(N), t.ravel()]
+        y = -log_p.sum() / np.float32(N)
+        return y
 
     def backward(self, dy):
-        # 反向传播： dL/dx = (y - one_hot(t)) / N 注意：不要单独反传 softmax！
+        # 反向传播： dL/dx = (y - one_hot(t)) / N
         # 拿到保存的值
-        y, t, N = self.y, self.t, self.N
+        x, t = self.input_variable
+        N, _ = x.shape
+
+        dy *= 1 / N
+        y = softmax(x)
+
         # 构造 one-hot
-        one_hot = np.zeros_like(y)
-        one_hot[np.arange(N), t] = 1
+        one_hot = np.zeros_like(y, dtype=t.dtype)
+        one_hot[np.arange(N), t.value] = 1
         # softmax + crossentropy 的合成梯度
-        dx = (y - one_hot) / N
+        y = (y - one_hot) * dy
         # 这个Node是指 t 无需梯度，因为t是标签，不是中间变量。如果没有None的话导致框架后续逻辑不兼容
-        return dy * dx, None
+        return y, None
+
+
+# 使用另一种计算方式。是数学上最稳定的表达形式，避免任何溢出或 underflow。
+def logsumexp(x, axis=1):
+    m = x.max(axis=axis, keepdims=True)
+    y = x - m
+    np.exp(y, out=y)
+    s = y.sum(axis=axis, keepdims=True)
+    np.log(s, out=s)
+    m += s
+    return m
 
 
 def softmax_cross_entropy(x, t):
