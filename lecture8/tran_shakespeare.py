@@ -2,70 +2,54 @@ import time
 
 import numpy as np
 
-from lecture8.core import Dataset, DataLoader, accuracy, SGD
-from lecture8.time_rnn import TimeSimpleRNN, time_softmax_cross_entropy
+from lecture8.core import Dataset, accuracy, Adam, SeqDataLoader, softmax_cross_entropy
+from lecture8.lstm import LSTMWithEmbedding
 
 
 class TinyShakespeareDataset(Dataset):
-    def __init__(self, seq_len=50, is_train=True, y_transform=None, t_transform=None):
-        self.seq_length = seq_len
-        self.is_train = is_train
-        self.char_to_id = None
-        self.id_to_char = None
-        super().__init__(train=is_train, y_transform=y_transform, t_transform=t_transform)
 
     def prepare(self):
-        file_path, origin_text = "shakespeare.txt", ""
-        with open(file_path, "r") as f:
-            origin_text = f.read()
+        # 路径可改
+        file_path = 'tiny_shakespeare.txt'
+        with open(file_path, 'r') as f:
+            data = f.read()
+        chars = list(data)
 
-        # 字符级编码
-        chars = sorted(list(set(origin_text)))
-        self.char_to_id = {ch: i for i, ch in enumerate(chars)}
-        self.id_to_char = {i: ch for i, ch in enumerate(chars)}
+        char_to_id = {}
+        id_to_char = {}
+        for word in data:
+            if word not in char_to_id:
+                new_id = len(char_to_id)
+                char_to_id[word] = new_id
+                id_to_char[new_id] = word
 
-        encoded = np.array([self.char_to_id[c] for c in origin_text], dtype=np.int32)
-        n = int(len(encoded) * 0.9)  # 测试集和训练集的划分点
-        if self.is_train:
-            self.data = encoded[:n]
-        else:
-            self.data = encoded[n:]
-        # 截断为 seq_len 的整数倍
-        total_len = len(self.data) // self.seq_length * self.seq_length
-        self.data = self.data[:total_len]
-
-    # idx 指的是从 idx 开始的 时序数据块[块大小为 seq_length]
-    def __getitem__(self, idx):
-        start = idx * self.seq_length
-        end = start + self.seq_length + 1
-        chunk = self.data[start:end]
-        x = chunk[:-1]
-        t = chunk[1:]
-        return x, t
-
-    def __len__(self):
-        return len(self.data) // self.seq_length
+        indices = np.array([char_to_id[c] for c in chars])
+        self.data = indices[:-1]
+        self.label = indices[1:]
+        self.char_to_id = char_to_id
+        self.id_to_char = id_to_char
 
 
 if __name__ == "__main__":
     # 设置一些超参数
-    hidden_size = 16
-    seq_length = 50
-    batch_size = 128
-    epochs = 5
-    learning_rate = 0.1
+    max_epoch = 10
+    batch_size = 10
+    hidden_size = 100
+    bptt_length = 30
+    embedding_size = 32
 
-    train_set = TinyShakespeareDataset(seq_len=seq_length, is_train=True)
-    test_set = TinyShakespeareDataset(seq_len=seq_length, is_train=False)
+    train_set = TinyShakespeareDataset(train=True)
+    test_set = TinyShakespeareDataset(train=False)
 
-    train_loader = DataLoader(train_set, batch_size)
-    test_loader = DataLoader(test_set, batch_size, shuffle=False)
+    train_loader = SeqDataLoader(train_set, batch_size)
+    test_loader = SeqDataLoader(test_set, batch_size)
 
     output_size = len(train_set.char_to_id)  # 一般是 vocab_size
+    seqlen = len(train_set)
 
     #   输出采用数字编码，在计算损失时会将其转换为 one-hot 编码
-    model = TimeSimpleRNN(hidden_size, output_size)
-    optimizer = SGD(model, learning_rate)
+    model = LSTMWithEmbedding(hidden_size, output_size, embedding_size)
+    optimizer = Adam(model)
 
     # 检查一批样本
     for x, t in train_loader:
@@ -73,38 +57,37 @@ if __name__ == "__main__":
         print("一个rnn块的目标序列（整数编码）:", t.shape)
         break
 
-    for epoch in range(epochs):
+    for epoch in range(max_epoch):
         # ---- 训练阶段 ----
-
+        s1 = int(round(time.time()))
+        model.reset_state()  # 先重置一下隐含状态
         total_loss, total_acc = 0, 0
         count = 0
+
         for x, t in train_loader:
-            s1 = int(round(time.time() * 1000))
+            # x和t 的维度本应该是 (batch_size, time_size, input_dim)
+            # 但这里字符级编码，所以 input_dim 为 1 省略， 所以这里 x为 (batch_size, time_size)
             y = model(x)
-            s2 = int(round(time.time() * 1000))
-            print("正向传播耗时[毫秒]: ", s2 - s1)
-            loss = time_softmax_cross_entropy(y, t)
-            s3 = int(round(time.time() * 1000))
-            print("带loss正向传播耗时[毫秒]: ", s3 - s2)
-            model.clear_grads()
-            loss.backward()
-            s4 = int(round(time.time() * 1000))
-            print("反向传播耗时[毫秒]: ", s4 - s3)
-            optimizer.update()
-            s5 = int(round(time.time() * 1000))
-            print("参数更新耗时[毫秒]: ", s5 - s4)
-            total_loss += loss * len(t)
-            total_acc += accuracy(y, t) * len(t)
+            # 输出 y 的维度应该是 (batch_size, time_size, 种类数 vocab_size )
+            total_loss += softmax_cross_entropy(y, t)
+            acc = accuracy(y, t)  # 新增：计算当前批次的准确率
+            total_acc += float(acc.value) * len(t)  # 新增：累加准确率
+
             count += 1
-            loss.unchain_backward()
-            print(count)
 
-        avg_train_loss = total_loss.value / len(train_loader.dataset)
-        avg_train_acc = total_acc.value / len(train_loader.dataset)
-        print("epoch", epoch, avg_train_loss, avg_train_acc)
+            if count % bptt_length == 0 or count == seqlen:
+                model.clear_grads()
+                total_loss.backward()
+                total_loss.unchain_backward()
+                optimizer.update()
+        avg_loss = float(total_loss.value) / count
+        avg_acc = total_acc / (count * batch_size)  # 新增：计算平均准确率
+        time_end = time.time()
+        print('| epoch %d | loss %f | acc %f | time %f' % (epoch + 1, avg_loss, avg_acc, time_end - s1))
 
-        # ---- 测试阶段 ----
-        total_loss, total_acc = 0, 0
-        for x, t in test_loader:
-            y = model(x)
-            loss = time_softmax_cross_entropy(y, t)
+    # # ---- 测试阶段 ----
+    # total_loss, total_acc = 0, 0
+    # count = 0
+    # for x, t in test_loader:
+    #     y = model(x)
+    #     loss = time_softmax_cross_entropy(y, t)

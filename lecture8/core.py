@@ -15,6 +15,8 @@ class Function:
         input_variable = [as_variable(temp_x) for temp_x in input_variable]
         # 从元组中取出所有变量对象，取出实际值，放到列表 xs 中
         xs = [temp_x.value for temp_x in input_variable]
+        # if xs != [] and xs[0].dtype == np.float64:
+        #     print("xxx")
         ys = self.forward(*xs)  # 解包元组中的元素
         # 有些函数只返回一个输出（比如 ReLU），有些返回多个输出（比如 split），为了让后面逻辑统一处理成可迭代对象，这里强制转成 tuple。
         if not isinstance(ys, tuple):
@@ -201,15 +203,18 @@ class Variable:
 
         # 后序遍历收集所有函数
 
-        def add_func(temp_func):
+        def add_func(temp_func, preCount=0):
             tempCount = 0
+            preCount += 1
+            if preCount > 600:
+                print("???")
             if temp_func not in visited:
                 # 先添加输入变量的创建函数
                 visited.add(temp_func)
                 # 把输入变量的所有创建函数也添加到列表中
                 for temp_xx in temp_func.input_variable:
                     if temp_xx.creator is not None:
-                        tempCount += 1 + add_func(temp_xx.creator)
+                        tempCount += 1 + add_func(temp_xx.creator, preCount)
                 # 再添加当前函数
                 funcs.append(temp_func)
             return tempCount
@@ -218,6 +223,7 @@ class Variable:
         if self.creator is not None:
             try:
                 count = add_func(self.creator)
+                # 需要看下
                 # print(count)
             except RecursionError as e:
                 print("递归溢出！")
@@ -270,7 +276,7 @@ class Add(Function):
         if self.input1_shape != self.input2_shape:
             input_dy1 = sum_to(input_dy1, self.input1_shape)
             input_dy2 = sum_to(input_dy2, self.input2_shape)
-        return 1 * input_dy1, 1 * input_dy2
+        return input_dy1, input_dy2
 
 
 def add(x0, x1):
@@ -467,15 +473,31 @@ class Stack(Function):
         return y
 
     def backward(self, dy):
-        dy = dy.value  # 取出真实的 ndarray
-        # dy 形状: 在 axis 维新增了一维
-        num_inputs = len(self.xs_shape)
-        # 将 dy 拆分为 num_inputs 份
-        splits = np.split(dy, num_inputs, axis=self.axis)
-        # 移除堆叠维度
-        grads = [Variable(np.squeeze(split, axis=self.axis)) for split in splits]
-        # list 转 tuple
+        # dy2 = dy.value  # 取出真实的 ndarray
+        # # dy 形状: 在 axis 维新增了一维
+        # num_inputs = len(self.xs_shape)
+        # # 将 dy 拆分为 num_inputs 份
+        # splits = np.split(dy2, num_inputs, axis=self.axis)
+        # # 移除堆叠维度
+        # grads = [Variable(np.squeeze(split, axis=self.axis)) for split in splits]
+        # # list 转 tuple
+        # return tuple(grads)
+
+        # 动态构建切片，以在正确的轴上分解梯度
+        grads = []
+        # 遍历每一个输入
+        for i in range(len(self.input_variable)):
+            # 动态构建切片对象，例如当 gy.ndim=3, self.axis=1, i=2 时
+            # slc 会是 [slice(None), 2, slice(None)]
+            slc = [slice(None)] * dy.ndim
+            slc[self.axis] = i
+
+            # gy[tuple(slc)] 会调用 GetItem 函数，将切片操作加入计算图
+            grad_slice = dy[tuple(slc)]
+            grads.append(grad_slice)
         return tuple(grads)
+
+        # return res
 
 
 def stack(inputs, axis=0):
@@ -804,7 +826,7 @@ def clip(x, x_min, x_max):
 # -----------------------------------------------------
 class MatMul(Function):
     def forward(self, input_x, input_W):
-        return input_x.dot(input_W)
+        return input_x.dot(input_W).astype(np.float32)
 
     def backward(self, dy):
         # 入参是 ndarray
@@ -824,13 +846,23 @@ def matmul(input_x, input_W):
 # 作为 Function 实现，还有实现为 Layer 的版本
 class LinearFunction(Function):
     def forward(self, x, W, b):
-        y = x.dot(W)
+        # 校验 x, w 必须是二维
+        if x.ndim != 2 or W.ndim != 2:
+            raise ValueError("x and W must be 2-dimensional arrays")
+
+        y = x.dot(W).astype(np.float32)
+        if np.max(y) > 1e10:
+            print("linear output is too large")
         if b is not None:  # 偏置是可选值
             y += b
         return y
 
     def backward(self, dy):
         x, W, b = self.input_variable
+        # 校验 x, w, dy 必须是二维
+        if dy.ndim != 2:
+            raise ValueError("dy and b must be 2-dimensional arrays")
+
         db = None if b is None or b.value is None else sum_to(dy, b.shape)
         dx = matmul(dy, W.T)
         dW = matmul(x.T, dy)
@@ -851,8 +883,8 @@ def linear(x, W, b=None):
 # -----------------------------------------------------
 class Sigmoid(Function):
     def forward(self, x):
-        y = 1 / (1 + np.exp(-x))
-        # y = np.tanh(x * 0.5) * 0.5 + 0.5  # Better implementation
+        # y = 1 / (1 + np.exp(-x))
+        y = np.tanh(x * 0.5) * 0.5 + 0.5  # Better implementation
         return y
 
     def backward(self, dy):
@@ -899,7 +931,7 @@ def accuracy(y, t):
         t_idx = t.value
 
     # Step 3: 展平计算准确率
-    acc = (pred.flatten() == t_idx.flatten()).mean()
+    acc = (pred.flatten() == t_idx.flatten()).mean().astype(np.float32)
     return Variable(as_array(acc))
 
 
@@ -917,7 +949,7 @@ def softmax_cross_entropy_simple(x, t):
     p = clip(p, 1e-15, 1.0)  # 防止0和1溢出问题
     log_p = log(p)
     tlog_p = log_p[np.arange(N), t.value]
-    return -1 * sum(tlog_p) / N
+    return - sum(tlog_p) / N
 
 
 class Softmax(Function):
@@ -926,8 +958,8 @@ class Softmax(Function):
 
     def forward(self, x):
         # 防止数据溢出，进行缩放
-        # y = x - x.max(axis=self.axis, keepdims=True)
-        y = np.exp(x)
+        x_shift = x - x.max(axis=self.axis, keepdims=True)
+        y = np.exp(x_shift)
         y /= y.sum(axis=self.axis, keepdims=True)
         return y
 
@@ -958,7 +990,7 @@ class SoftmaxCrossEntropy(Function):
         y = softmax(x)
 
         # 构造 one-hot
-        one_hot = np.zeros_like(y, dtype=t.dtype)
+        one_hot = np.zeros_like(y, dtype=np.float32)
         one_hot[np.arange(N), t.value] = 1
         # softmax + crossentropy 的合成梯度
         y = (y - one_hot) * dy
@@ -994,7 +1026,7 @@ class MeanSquaredError(Function):
     def backward(self, dy):
         x0, x1 = self.input_variable
         diff = x0 - x1
-        dx0 = dy * diff * (2.0 / len(diff))
+        dx0 = dy * diff * np.float32((2.0 / len(diff)))
         dx1 = -dx0
         return dx0, dx1
 
@@ -1141,6 +1173,141 @@ class MLP(Model):
 
 
 # Start ------------------------------------------------
+#             RNN、LSTM 等循环神经网络
+# -----------------------------------------------------
+
+class RNN(Layer):
+    def __init__(self, hidden_size):
+        super().__init__()
+        self.x_w = Linear(hidden_size)
+        # 这里不使用偏置的原因是，在 x_w 中已经包括了偏置
+        self.h_prev_w = Linear(hidden_size, need_bias=False)
+        self.h_cur = None  # 当前步骤的隐藏状态，初始为None，每次前向传播后更新
+
+    def reset_state(self):
+        self.h_cur = None
+
+    def forward(self, x):
+        if self.h_cur is None:
+            # 第一个时间步，没有隐藏状态，所以直接使用输入计算隐藏状态
+            h_new = tanh(self.x_w(x))
+        else:
+            h_new = tanh(self.x_w(x) + self.h_prev_w(self.h_cur))
+        self.h_cur = h_new
+        # 输出的维度是 x_batch_size, hidden_size
+        return h_new
+
+
+class SimpleRNN(Model):
+    def __init__(self, hidden_size, out_size):
+        super().__init__()
+        self.rnn = RNN(hidden_size)
+        self.fc = Linear(out_size)
+
+    def reset_state(self):
+        self.rnn.reset_state()
+
+    def forward(self, input_x):
+        h = self.rnn(input_x)
+        y = self.fc(h)
+        return y
+
+
+# 简单 LSTM ，不带词嵌入
+class SimpleLSTM(Model):
+    def __init__(self, hidden_size, out_size):
+        super().__init__()
+        self.rnn = LSTM(hidden_size)
+        self.fc = Linear(out_size)
+
+    def reset_state(self):
+        self.rnn.reset_state()
+
+    def forward(self, input_x):
+        y = self.rnn(input_x)
+        y = self.fc(y)
+        return y
+
+
+# 带有词嵌入的 LSTM
+class LSTMWithEmbedding(Model):
+    # out_size 一般是 vocab_size
+    def __init__(self, hidden_size, out_size, embedding_size):
+        super().__init__()
+        self.embedding = Embedding(out_size, embedding_size)
+        self.rnn = LSTM(hidden_size)
+        self.fc = Linear(out_size)
+
+    def reset_state(self):
+        self.rnn.reset_state()
+
+    def forward(self, input_x):
+        temp1 = self.embedding(input_x)
+        y = self.rnn(temp1)
+        y = self.fc(y)
+        return y
+
+
+# 词嵌入层
+class Embedding(Layer):
+    # in_size 一般是 vocab_size， embedding_size需要手动指定，一般是 64，128， 256等。
+    def __init__(self, in_size, embedding_size):
+        super().__init__()
+        self.W_embed = Parameter(np.random.randn(in_size, embedding_size), name='W_embed')
+
+    def __call__(self, x):
+        y = self.W_embed[x]
+        return y
+
+
+class LSTM(Layer):
+    def __init__(self, hidden_size, input_size=None):
+        super().__init__()
+
+        self.h = None
+        self.c = None
+
+        H, I = hidden_size, input_size
+        self.x2f = Linear(H, input_size=I)
+        self.x2i = Linear(H, input_size=I)
+        self.x2o = Linear(H, input_size=I)
+        self.x2u = Linear(H, input_size=I)
+        self.h2f = Linear(H, input_size=H, need_bias=False)
+        self.h2i = Linear(H, input_size=H, need_bias=False)
+        self.h2o = Linear(H, input_size=H, need_bias=False)
+        self.h2u = Linear(H, input_size=H, need_bias=False)
+
+        self.reset_state()
+
+    def reset_state(self):
+        self.h = None
+        self.c = None
+
+    def forward(self, x):
+        if self.h is None:
+            f = sigmoid(self.x2f(x))
+            i = sigmoid(self.x2i(x))
+            o = sigmoid(self.x2o(x))
+            u = tanh(self.x2u(x))
+        else:
+            f = sigmoid(self.x2f(x) + self.h2f(self.h))
+            i = sigmoid(self.x2i(x) + self.h2i(self.h))
+            o = sigmoid(self.x2o(x) + self.h2o(self.h))
+            u = tanh(self.x2u(x) + self.h2u(self.h))
+
+        if self.c is None:
+            # 点积，不是矩阵乘法
+            c_new = (i * u)
+        else:
+            c_new = (f * self.c) + (i * u)
+
+        h_new = o * tanh(c_new)
+
+        self.h, self.c = h_new, c_new
+        return h_new
+
+
+# Start ------------------------------------------------
 #                       优化器
 # -----------------------------------------------------
 class Optimizer:
@@ -1170,11 +1337,47 @@ class Optimizer:
         raise NotImplementedError()
 
 
+class Adam(Optimizer):
+    def __init__(self, model, alpha=0.001, beta1=0.9, beta2=0.999, eps=1e-8):
+        self.t = 1
+        self.alpha = alpha
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.eps = eps
+        self.ms = {}
+        self.vs = {}
+
+        fix1 = 1. - math.pow(self.beta1, self.t)
+        fix2 = 1. - math.pow(self.beta2, self.t)
+        lr = self.alpha * math.sqrt(fix2) / fix1
+
+        super().__init__(model, lr)
+
+    def update(self, *args, **kwargs):
+        self.t += 1
+        super().update(*args, **kwargs)
+
+    def update_one(self, param):
+        key = id(param)
+        if key not in self.ms:
+            self.ms[key] = np.zeros_like(param.value)
+            self.vs[key] = np.zeros_like(param.value)
+
+        m, v = self.ms[key], self.vs[key]
+        beta1, beta2, eps = self.beta1, self.beta2, self.eps
+        grad = param.grad.value
+
+        m += (1 - beta1) * (grad - m)
+        v += (1 - beta2) * (grad * grad - v)
+        param.value -= self.lr * m / (np.sqrt(v) + eps)
+
+
 class SGD(Optimizer):
     def __init__(self, model, lr=0.01):
         super().__init__(model)
         self.lr = lr
 
+    # 没有进行梯度裁剪
     def update_one(self, param):
         param.value -= self.lr * param.grad.value
 
@@ -1186,6 +1389,7 @@ class AdaGrad(Optimizer):
         self.eps = eps
         self.h = {}  # 累积平方梯度
 
+    # 没有进行梯度裁剪
     def update_one(self, param):
         if param.grad is None:
             return
@@ -1211,6 +1415,7 @@ class Momentum(Optimizer):
         self.momentum = momentum
         self.v = {}  # 保存每个参数的动量项
 
+    # 没有进行梯度裁剪
     def update_one(self, param):
         if param.grad is None:
             return
@@ -1278,7 +1483,7 @@ class DataLoader:
         self.shuffle = shuffle  # 是否在每个 epoch 开始时打乱数据索引
         self.data_size = len(dataset)
         # 每个 epoch 中，迭代的最大次数
-        self.max_iter = math.ceil(self.data_size / batch_size)
+        self.max_iter = self.data_size // batch_size  # 丢弃最后一个不完整的batch_size
 
         self.reset()
 
@@ -1312,6 +1517,30 @@ class DataLoader:
         return self.__next__()
 
 
+# 序列类型的数据加载器
+class SeqDataLoader(DataLoader):
+    def __init__(self, dataset, batch_size):
+        # 时序不能 shuffle
+        super().__init__(dataset=dataset, batch_size=batch_size, shuffle=False)
+
+    def __next__(self):
+        # max_iter 已经去除了最后一个不完整的 batch
+        if self.iteration >= self.max_iter:
+            self.reset()
+            raise StopIteration
+
+        jump = self.data_size // self.batch_size
+        batch_index = [(i * jump + self.iteration) % self.data_size for i in
+                       range(self.batch_size)]
+        batch = [self.dataset[i] for i in batch_index]
+
+        x = np.array([example[0] for example in batch])
+        t = np.array([example[1] for example in batch])
+
+        self.iteration += 1
+        return x, t
+
+
 def get_example_data():
     num_data, num_class, input_dim = 1000, 3, 2
     data_size = num_class * num_data
@@ -1331,6 +1560,50 @@ def get_example_data():
     x = x[indices]  # 用于输入数据集，每个类别对应一个整数
     t = t[indices]  # 标签数据集，每个类别对应一个整数
     return x, t
+
+
+# 正弦数据集
+class SinCurve(Dataset):
+    def prepare(self):
+        num_data = 1000
+        dtype = np.float32
+        # 生成 1000个 0 到 2π 之间的等间隔数据点
+        x = np.linspace(0, 2 * np.pi, num_data)
+        # 添加噪声值
+        noise_range = (-0.05, 0.05)
+        noise = np.random.uniform(noise_range[0], noise_range[1], size=x.shape)
+        if self.train:
+            y = np.sin(x) + noise  # 加入噪声
+        else:
+            y = np.cos(x)
+        y = y.astype(dtype)
+        self.data = y[:-1][:, np.newaxis]  # (1000,1)
+        self.label = y[1:][:, np.newaxis]  # (1000,1)
+
+
+# 莎士比亚文本数据集
+class TinyShakespeareDataset(Dataset):
+
+    def prepare(self):
+        # 路径可改
+        file_path = 'tiny_shakespeare.txt'
+        with open(file_path, 'r') as f:
+            data = f.read()
+        chars = list(data)
+
+        char_to_id = {}
+        id_to_char = {}
+        for word in data:
+            if word not in char_to_id:
+                new_id = len(char_to_id)
+                char_to_id[word] = new_id
+                id_to_char[new_id] = word
+
+        indices = np.array([char_to_id[c] for c in chars])
+        self.data = indices[:-1]
+        self.label = indices[1:]
+        self.char_to_id = char_to_id
+        self.id_to_char = id_to_char
 
 
 # End -----------------------------------------------

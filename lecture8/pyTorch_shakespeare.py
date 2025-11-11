@@ -1,5 +1,5 @@
 """
-字符级 RNN 训练 Shakespeare 文本
+Pytorch 字符级 RNN 训练 Shakespeare 文本
 模型结构: One-hot 输入 → RNN → Linear → Softmax
 """
 
@@ -11,9 +11,9 @@ import torch.optim as optim
 # ================================================================
 # 👇 参数区域（直接修改这里即可）
 # ================================================================
-seq_length = 100  # 序列长度（时间步）
+seq_length = 50  # 序列长度（时间步）
 hidden_size = 128  # RNN 隐藏层大小
-num_epochs = 1
+num_epochs = 10
 learning_rate = 0.002
 batch_size = 64
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -134,4 +134,5 @@ def generate(model, start_text="To be", length=200):
 
 # ====================== 测试生成 ======================
 print("\n=== Sample generation after training ===")
-print(generate(model, start_text="ROMEO:", length=500))
+print(generate(model, start_text="Alas, that love, whose view is muffled still", length=500))
+# 和真正文本中的内容很像
